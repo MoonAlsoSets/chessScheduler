@@ -1,0 +1,6 @@
+{
+  "name": "chess-scheduler",
+  "private": true,
+  "type": "module",
+  "description": "Wymondham Chess Club availability scheduler — static page + Vercel functions, no dependencies."
+}

@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Club Scheduler · Wymondham Chess Club</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">
+    <a class="club" href="https://wymondhamchess.com">Wymondham Chess Club</a>
+    <h1>Club Scheduler</h1>
+  </div>
+  <div class="who" id="who" hidden>
+    <span id="whoName"></span>
+    <button class="link" id="changeMe" type="button">change</button>
+    <span class="role" id="roleChip" hidden></span>
+  </div>
+</header>
+
+<!-- Club-code gate -->
+<main id="gate" class="panel" hidden>
+  <h2>Members only</h2>
+  <p>Enter the club code to see who's coming along. You'll only need to do this once on each device.</p>
+  <form id="gateForm" autocomplete="off">
+    <input id="gateCode" type="password" placeholder="Club code" aria-label="Club code" required>
+    <button class="btn" type="submit">Enter</button>
+  </form>
+  <p class="error" id="gateError" role="alert"></p>
+</main>
+
+<main id="app" hidden>
+  <!-- "Who are you?" -->
+  <section id="picker" class="picker" hidden>
+    <label for="pickerSelect">Who are you?</label>
+    <select id="pickerSelect"></select>
+    <button class="btn" id="pickerSave" type="button">That's me</button>
+    <span class="hint">Remembered on this device. Your row goes to the top.</span>
+  </section>
+
+  <div class="toolbar">
+    <button class="btn ghost" id="togglePast" type="button">Show past weeks</button>
+    <span class="focusNote" id="focusNote"></span>
+    <span class="spacer"></span>
+    <button class="btn ghost" id="refresh" type="button" title="Refresh">↻ Refresh</button>
+    <button class="btn ghost" id="openAdmin" type="button" hidden>Manage</button>
+  </div>
+
+  <div class="gridWrap" id="gridWrap">
+    <table class="grid" id="grid"></table>
+  </div>
+
+  <ul class="legend">
+    <li><span class="g s-scheduled">♞</span> Scheduled to play</li>
+    <li>🏆 Cup match</li>
+    <li><span class="capKey">♚</span> Team captain</li>
+    <li><span class="g fri"></span> Friday club night</li>
+    <li><span class="g s-available">✓</span> Available / coming</li>
+    <li><span class="g s-undecided">?</span> Undecided</li>
+    <li><span class="g s-unavailable">✗</span> Not available</li>
+    <li class="tip">Tap a date to sort everyone by that night.</li>
+  </ul>
+
+  <footer class="foot">
+    <button class="link" id="elevate" type="button">Captain / admin</button>
+    <button class="link" id="demote" type="button" hidden>Leave captain mode</button>
+  </footer>
+</main>
+
+<!-- Status picker for a cell -->
+<div class="menu" id="menu" role="menu" hidden></div>
+
+<!-- Captain / admin code -->
+<dialog id="elevateDlg">
+  <form method="dialog" id="elevateForm">
+    <h3>Captain or admin code</h3>
+    <input id="elevateCode" type="password" placeholder="Code" aria-label="Captain or admin code" autocomplete="off">
+    <p class="error" id="elevateError" role="alert"></p>
+    <div class="row">
+      <button class="btn ghost" value="cancel" formnovalidate type="button" id="elevateCancel">Cancel</button>
+      <button class="btn" type="submit">Unlock</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Admin -->
+<dialog id="adminDlg" class="wide">
+  <div class="dlgHead">
+    <h3>Manage</h3>
+    <button class="btn ghost" type="button" id="adminClose">Done</button>
+  </div>
+  <p class="error" id="adminError" role="alert"></p>
+
+  <section>
+    <h4>Fixtures</h4>
+    <form id="fxForm" class="inline">
+      <input type="date" id="fxDate" required aria-label="Match date">
+      <input id="fxTeam" list="teamList" placeholder="Our team" required aria-label="Our team">
+      <input id="fxOpp" placeholder="Opponent" required aria-label="Opponent">
+      <select id="fxHA" aria-label="Home or away"><option value="H">Home</option><option value="A">Away</option></select>
+      <input id="fxComp" list="compList" placeholder="Cup? e.g. Williamson Cup" aria-label="Competition — leave blank for league">
+      <input id="fxNotes" placeholder="Notes (optional)" aria-label="Notes">
+      <button class="btn" type="submit">Add</button>
+    </form>
+    <datalist id="teamList"></datalist>
+    <datalist id="compList"></datalist>
+    <ul class="list" id="fxList"></ul>
+  </section>
+
+  <section>
+    <h4>Extra dates</h4>
+    <p class="hint">Fridays and fixture dates appear automatically — add anything else here.</p>
+    <form id="dtForm" class="inline">
+      <input type="date" id="dtDate" required aria-label="Date">
+      <input id="dtLabel" placeholder="Label, e.g. Rapidplay" aria-label="Label">
+      <button class="btn" type="submit">Add</button>
+    </form>
+    <ul class="list" id="dtList"></ul>
+  </section>
+
+  <section>
+    <h4>Team captains</h4>
+    <p class="hint">Shown as ♚ next to their name. Editing rights still come from the captain code.</p>
+    <ul class="list" id="capList"></ul>
+  </section>
+
+  <section>
+    <h4>Members</h4>
+    <form id="mbForm" class="inline">
+      <input id="mbName" placeholder="Name, e.g. Dan W." required aria-label="Member name">
+      <button class="btn" type="submit">Add</button>
+    </form>
+    <ul class="list" id="mbList"></ul>
+  </section>
+</dialog>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
