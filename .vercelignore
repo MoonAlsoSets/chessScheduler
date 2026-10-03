@@ -1,0 +1,9 @@
+# Never upload secrets or local tooling to Vercel.
+.env
+.env.*
+.vercel
+.git
+node_modules
+# Not needed on the live site.
+supabase
+README.md
