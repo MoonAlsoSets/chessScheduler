@@ -174,6 +174,10 @@ input:focus, select:focus, .btn:focus-visible, .cellBtn:focus-visible { outline:
 .nameIn .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .nameIn .cap { flex: none; color: var(--brass); font-size: 15px; line-height: 1; cursor: help; }
 .list select { flex: 0 1 200px; min-width: 0; padding: 4px 8px; }
+.list select.piece { flex: 0 1 170px; }
+.legend .teams { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.legend .lt { white-space: nowrap; }
+.nameIn .cap + .cap { margin-left: -2px; }
 .grid tr.divider td { height: 4px; padding: 0; background: var(--brass); border: 0; }
 .grid tr.inactive .name { color: var(--stone); font-style: italic; }
 

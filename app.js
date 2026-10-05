@@ -9,6 +9,9 @@ const STATUS = {
   unavailable: { glyph: '✗', rank: 3, match: 'Not available',     night: 'Not coming' },
 };
 const NO_ANSWER_RANK = 4;
+const PIECES = ['♚', '♛', '♜', '♝', '♞', '♟'];
+const PIECE_NAMES = { '♚': 'King', '♛': 'Queen', '♜': 'Rook', '♝': 'Bishop', '♞': 'Knight', '♟': 'Pawn' };
+const DEFAULT_PIECE = '♞';
 const ROLE_RANK = { member: 1, captain: 2, admin: 3 };
 const HORIZON_WEEKS = 26;
 const REFRESH_MS = 60000;
@@ -23,6 +26,8 @@ const S = {
   fixtures: [],
   extraDates: [],
   captains: [],       // [{ team, member_id }]
+  teamIcons: {},      // team -> chess piece
+  schedTeam: new Map(), // "memberId|date" -> team they're scheduled for
   teams: [],          // every team name used in fixtures
   avail: new Map(),   // "memberId|date" -> status
   me: null,           // member id (number)
@@ -85,6 +90,8 @@ async function load() {
   S.captains = d.captains || [];
   S.teams = d.teams || [];
   S.avail = new Map(d.availability.map((a) => [key(a.member_id, a.event_date), a.status]));
+  S.schedTeam = new Map(d.availability.filter((a) => a.team).map((a) => [key(a.member_id, a.event_date), a.team]));
+  S.teamIcons = d.teamIcons || {};
 
   const stored = Number(lsGet(ME_KEY));
   S.me = activeMembers().some((m) => m.id === stored) ? stored : null;
@@ -93,11 +100,22 @@ async function load() {
 const activeMembers = () => S.members.filter((m) => m.active);
 const captainOf = (memberId) => S.captains.filter((c) => c.member_id === memberId).map((c) => c.team);
 
-/** Name cell content: the name, plus ♚ for team captains. */
+const teamIcon = (team) => S.teamIcons[team] || DEFAULT_PIECE;
+const colTeams = (c) => [...new Set(c.fixtures.map((f) => f.team))];
+
+/** Which team a scheduled player is down for: stored, or the only team playing that day. */
+function schedTeamFor(memberId, c) {
+  const t = S.schedTeam.get(key(memberId, c.date));
+  if (t) return t;
+  const teams = colTeams(c);
+  return teams.length === 1 ? teams[0] : null;
+}
+
+/** Name cell content: the name, plus the team's piece for each team they captain. */
 function nameHtml(m) {
-  const teams = captainOf(m.id);
-  const cap = teams.length ? `<span class="cap" title="Captain: ${esc(teams.join(', '))}" aria-label="Captain of ${esc(teams.join(', '))}">♚</span>` : '';
-  return `<div class="nameIn"><span class="nm">${esc(m.name)}</span>${cap}</div>`;
+  const caps = captainOf(m.id).map((t) =>
+    `<span class="cap" title="Captain: ${esc(t)}" aria-label="Captain of ${esc(t)}">${S.teamIcons[t] || '♚'}</span>`).join('');
+  return `<div class="nameIn"><span class="nm">${esc(m.name)}</span>${caps}</div>`;
 }
 
 /** Every Friday in the window + fixture dates + extra dates. */
@@ -157,7 +175,7 @@ function renderPicker(force = false) {
 function colHeadHtml(c, nextDate) {
   const tags = [];
   for (const f of c.fixtures) {
-    const icon = f.competition ? '🏆' : '♞';
+    const icon = f.competition ? '🏆' : teamIcon(f.team);
     const comp = f.competition ? esc(f.competition) + ': ' : '';
     tags.push(`<div class="tag fx${f.competition ? ' cup' : ''}" title="${comp}${esc(f.team)} v ${esc(f.opponent)} (${f.home_away === 'H' ? 'home' : 'away'})${f.notes ? ' — ' + esc(f.notes) : ''}">${icon} ${esc(f.team)} (${f.home_away})<small>v ${esc(f.opponent)}</small></div>`);
   }
@@ -182,8 +200,11 @@ function cellHtml(m, c) {
   if (st) cls.push('s-' + st);
   if (c.past) cls.push('past');
   if (c.date === S.focus) cls.push('focus');
-  const glyph = st ? STATUS[st].glyph : '';
-  const label = st ? (c.isMatch ? STATUS[st].match : (STATUS[st].night || STATUS[st].match)) : 'No answer';
+  const sTeam = st === 'scheduled' ? schedTeamFor(m.id, c) : null;
+  const glyph = !st ? '' : st === 'scheduled' ? (sTeam ? teamIcon(sTeam) : STATUS.scheduled.glyph) : STATUS[st].glyph;
+  const label = !st ? 'No answer'
+    : st === 'scheduled' ? `Scheduled to play${sTeam ? ' for ' + esc(sTeam) : ''}`
+    : (c.isMatch ? STATUS[st].match : (STATUS[st].night || STATUS[st].match));
   const inner = canEdit(m.id, c)
     ? `<button class="cellBtn" type="button" data-m="${m.id}" data-d="${c.date}" aria-label="${esc(m.name)}, ${fmt(c.date, { day: 'numeric', month: 'short' })}: ${label}">${glyph}</button>`
     : `<span class="cellView" title="${label}">${glyph}</span>`;
@@ -223,18 +244,24 @@ function renderGrid() {
 
   const foot = `<tfoot><tr><td class="name">Totals</td>${cols.map((c) => {
     const n = { scheduled: 0, available: 0, undecided: 0, unavailable: 0 };
+    const perTeam = {};
     for (const m of activeMembers()) {
       const st = S.avail.get(key(m.id, c.date));
       if (st) n[st]++;
+      if (st === 'scheduled') { const t = schedTeamFor(m.id, c); if (t) perTeam[t] = (perTeam[t] || 0) + 1; }
     }
     const parts = [];
-    if (c.isMatch) parts.push(`<span class="ts" title="Scheduled to play">♞${n.scheduled}</span>`);
+    if (c.isMatch) for (const t of colTeams(c)) parts.push(`<span class="ts" title="${esc(t)}: scheduled to play">${teamIcon(t)}${perTeam[t] || 0}</span>`);
     parts.push(`<span class="ta" title="${c.isMatch ? 'Available' : 'Coming'}">✓${n.available}</span>`);
     if (n.undecided) parts.push(`<span class="tu" title="Undecided">?${n.undecided}</span>`);
     return `<td class="tot${isFri(c.date) ? ' fri' : ''}${c.past ? ' past' : ''}${c.date === S.focus ? ' focus' : ''}">${parts.join(' ')}</td>`;
   }).join('')}</tr></tfoot>`;
 
   $('grid').innerHTML = head + `<tbody>${body}</tbody>` + foot;
+
+  // Legend: one entry per team, showing its piece.
+  const legendTeams = [...new Set([...S.teams, ...Object.keys(S.teamIcons)])].sort((a, b) => a.localeCompare(b, 'en-GB'));
+  $('teamLegend').innerHTML = legendTeams.map((t) => `<span class="lt"><span class="g s-scheduled">${teamIcon(t)}</span>${esc(t)}</span>`).join('');
 }
 
 function renderAll() {
@@ -260,10 +287,14 @@ function openMenu(btn) {
   const member = S.members.find((m) => m.id === memberId);
   if (!col || !member) return;
   const current = S.avail.get(key(memberId, date));
+  const curTeam = current === 'scheduled' ? schedTeamFor(memberId, col) : null;
 
-  const opts = Object.entries(STATUS)
-    .filter(([k]) => col.isMatch || k !== 'scheduled')
-    .map(([k, v]) => `<button type="button" role="menuitem" data-s="${k}" class="${k === current ? 'on' : ''}"><span class="g s-${k}">${v.glyph}</span>${col.isMatch ? v.match : v.night}</button>`);
+  // One "scheduled" option per team of ours playing that day.
+  const teams = colTeams(col);
+  const opts = teams.map((t) => `<button type="button" role="menuitem" data-s="scheduled" data-team="${esc(t)}" class="${current === 'scheduled' && curTeam === t ? 'on' : ''}"><span class="g s-scheduled">${teamIcon(t)}</span>${teams.length > 1 ? 'Playing for ' + esc(t) : 'Scheduled to play (' + esc(t) + ')'}</button>`);
+  opts.push(...Object.entries(STATUS)
+    .filter(([k]) => k !== 'scheduled')
+    .map(([k, v]) => `<button type="button" role="menuitem" data-s="${k}" class="${k === current ? 'on' : ''}"><span class="g s-${k}">${v.glyph}</span>${col.isMatch ? v.match : v.night}</button>`));
   if (current) opts.push('<button type="button" role="menuitem" data-s="" class="clear"><span class="g">–</span>Clear</button>');
 
   const menu = $('menu');
@@ -289,16 +320,19 @@ function closeMenu() {
   menuCtx = null;
 }
 
-async function setStatus(memberId, date, status) {
+async function setStatus(memberId, date, status, team = null) {
   const k = key(memberId, date);
   const before = S.avail.get(k);
+  const beforeTeam = S.schedTeam.get(k);
   if (status) S.avail.set(k, status); else S.avail.delete(k);
+  if (status === 'scheduled' && team) S.schedTeam.set(k, team); else S.schedTeam.delete(k);
   renderGrid();
   try {
     const me = S.members.find((m) => m.id === S.me);
-    await api('/api/status', { memberId, date, status: status || null, actor: me ? me.name : '' });
+    await api('/api/status', { memberId, date, status: status || null, team: status === 'scheduled' ? team : null, actor: me ? me.name : '' });
   } catch (err) {
     if (before) S.avail.set(k, before); else S.avail.delete(k);
+    if (beforeTeam) S.schedTeam.set(k, beforeTeam); else S.schedTeam.delete(k);
     renderGrid();
     handleError(err);
   }
@@ -326,9 +360,18 @@ function renderAdmin() {
   const capTeams = [...new Set([...S.teams, ...S.captains.map((c) => c.team)])].sort((a, b) => a.localeCompare(b, 'en-GB'));
   const opts = (sel) => '<option value="">— none —</option>' + activeMembers()
     .map((m) => `<option value="${m.id}"${m.id === sel ? ' selected' : ''}>${esc(m.name)}</option>`).join('');
+  const pieceOpts = (team) => {
+    const cur = S.teamIcons[team] || '';
+    const usedBy = (p) => Object.entries(S.teamIcons).filter(([t, i]) => i === p && t !== team).map(([t]) => t);
+    return `<option value=""${cur ? '' : ' selected'}>${DEFAULT_PIECE} (default)</option>` + PIECES.map((p) => {
+      const u = usedBy(p);
+      return `<option value="${p}"${p === cur ? ' selected' : ''}>${p} ${PIECE_NAMES[p]}${u.length ? ' (' + esc(u.join(', ')) + ')' : ''}</option>`;
+    }).join('');
+  };
   $('capList').innerHTML = capTeams.length ? capTeams.map((t) => {
     const cur = S.captains.find((c) => c.team === t);
     return `<li><span class="grow"><strong>${esc(t)}</strong></span>
+      <select class="piece" data-icon-team="${esc(t)}" aria-label="Piece for ${esc(t)}">${pieceOpts(t)}</select>
       <select data-cap-team="${esc(t)}" aria-label="Captain of ${esc(t)}">${opts(cur ? cur.member_id : null)}</select></li>`;
   }).join('') : '<li class="hint">Add fixtures first — teams come from the fixture list.</li>';
 
@@ -450,7 +493,7 @@ function wire() {
     if (!b || !menuCtx) return;
     const { memberId, date } = menuCtx;
     closeMenu();
-    setStatus(memberId, date, b.dataset.s || null);
+    setStatus(memberId, date, b.dataset.s || null, b.dataset.team || null);
   });
   document.addEventListener('click', (e) => {
     if (menuCtx && !e.target.closest('#menu')) closeMenu();
@@ -524,6 +567,8 @@ function wire() {
     }
   });
   $('adminDlg').addEventListener('change', (e) => {
+    const icon = e.target.closest('select[data-icon-team]');
+    if (icon) return adminDo({ action: 'setTeamIcon', team: icon.dataset.iconTeam, icon: icon.value || null });
     const sel = e.target.closest('select[data-cap-team]');
     if (!sel) return;
     adminDo({ action: 'setCaptain', team: sel.dataset.capTeam, memberId: sel.value ? Number(sel.value) : null });

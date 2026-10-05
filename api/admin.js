@@ -7,6 +7,7 @@
 //   addDate       { date, label? }
 //   deleteDate    { id }
 //   setCaptain    { team, memberId | null }   (null clears the captain)
+//   setTeamIcon   { team, icon | null }       (one of ♚♛♜♝♞♟; null = default)
 
 import { requireRole } from './_lib/auth.js';
 import { rpc, isIsoDate, fail } from './_lib/db.js';
@@ -64,6 +65,13 @@ export default async function handler(req, res) {
       if (!team) return bad('Which team?');
       if (b.memberId !== null && !posInt(b.memberId)) return bad('Unknown member.');
       args = { team, memberId: b.memberId === null ? null : Number(b.memberId) };
+      break;
+    }
+    case 'setTeamIcon': {
+      const team = clean(b.team, 40);
+      if (!team) return bad('Which team?');
+      if (b.icon !== null && !['♚', '♛', '♜', '♝', '♞', '♟'].includes(b.icon)) return bad('Pick a chess piece.');
+      args = { team, icon: b.icon };
       break;
     }
     case 'addDate':

@@ -344,3 +344,158 @@ revoke all on function public.chess_get_data(text, date, date, boolean) from pub
 revoke all on function public.chess_admin(text, text, jsonb) from public, authenticated;
 grant execute on function public.chess_get_data(text, date, date, boolean) to anon;
 grant execute on function public.chess_admin(text, text, jsonb) to anon;
+
+-- ---------------------------------------------------------------------------
+-- Migrations "chess_team_pieces_tables" + "chess_team_pieces_functions":
+-- each team gets a chess piece (♚♛♜♝♞♟), and a "scheduled" entry records
+-- which team the member plays for that day.
+--
+-- chess_set_status_v2 replaces chess_set_status (added under a new name so no
+-- DROP was needed while the old site was live; the old function can be
+-- dropped once the new site is deployed). The definitions below of
+-- chess_get_data and chess_admin are the CURRENT ones and supersede all
+-- earlier copies in this file.
+-- ---------------------------------------------------------------------------
+create table if not exists public.chess_team_icons (
+  team text primary key check (length(trim(team)) between 1 and 40),
+  icon text not null check (icon in ('♚','♛','♜','♝','♞','♟')),
+  updated_at timestamptz not null default now()
+);
+alter table public.chess_team_icons enable row level security;
+revoke all on public.chess_team_icons from anon, authenticated;
+alter table public.chess_availability add column if not exists team text check (team is null or length(team) <= 40);
+
+create or replace function public.chess_set_status_v2(p_key text, p_member bigint, p_date date, p_status text, p_by text,
+                                                      p_allow_inactive boolean default false, p_team text default null)
+returns jsonb language plpgsql security definer set search_path = public, extensions as $$
+declare v_match boolean; v_extra boolean; v_team text; v_teams int;
+begin
+  perform public.chess_auth(p_key);
+  if not exists (select 1 from public.chess_members where id = p_member and (active or p_allow_inactive)) then
+    return jsonb_build_object('error', 'Unknown member.');
+  end if;
+  select count(distinct team) into v_teams from public.chess_fixtures where match_date = p_date;
+  v_match := v_teams > 0;
+  v_extra := exists (select 1 from public.chess_extra_dates where event_date = p_date);
+  if extract(isodow from p_date) <> 5 and not v_match and not v_extra then
+    return jsonb_build_object('error', 'That date is not on the schedule.');
+  end if;
+  if p_status is null then
+    delete from public.chess_availability where member_id = p_member and event_date = p_date;
+    return jsonb_build_object('ok', true);
+  end if;
+  if p_status not in ('scheduled','available','undecided','unavailable') then
+    return jsonb_build_object('error', 'Bad status.');
+  end if;
+  if p_status = 'scheduled' then
+    if not v_match then
+      return jsonb_build_object('error', 'Scheduled to play is only for match dates.');
+    end if;
+    if p_team is not null then
+      if not exists (select 1 from public.chess_fixtures where match_date = p_date and team = p_team) then
+        return jsonb_build_object('error', p_team || ' are not playing that day.');
+      end if;
+      v_team := p_team;
+    elsif v_teams = 1 then
+      select team into v_team from public.chess_fixtures where match_date = p_date limit 1;
+    else
+      return jsonb_build_object('error', 'Two of our teams play that day - pick which one.');
+    end if;
+  end if;
+  insert into public.chess_availability (member_id, event_date, status, team, updated_at, updated_by)
+  values (p_member, p_date, p_status, v_team, now(), left(p_by, 80))
+  on conflict (member_id, event_date) do update
+    set status = excluded.status, team = excluded.team, updated_at = excluded.updated_at, updated_by = excluded.updated_by;
+  return jsonb_build_object('ok', true);
+end $$;
+
+create or replace function public.chess_get_data(p_key text, p_from date, p_to date, p_include_inactive boolean default false)
+returns jsonb language plpgsql security definer set search_path = public, extensions as $$
+begin
+  perform public.chess_auth(p_key);
+  return jsonb_build_object(
+    'members', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'name', name, 'active', active) order by name)
+                         from public.chess_members where active or p_include_inactive), '[]'::jsonb),
+    'fixtures', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'match_date', match_date, 'team', team, 'opponent', opponent,
+                                                              'home_away', home_away, 'notes', notes, 'competition', competition) order by match_date, team)
+                          from public.chess_fixtures where match_date between p_from and p_to), '[]'::jsonb),
+    'extraDates', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'event_date', event_date, 'label', label) order by event_date)
+                            from public.chess_extra_dates where event_date between p_from and p_to), '[]'::jsonb),
+    'availability', coalesce((select jsonb_agg(jsonb_build_object('member_id', member_id, 'event_date', event_date, 'status', status, 'team', team))
+                              from public.chess_availability where event_date between p_from and p_to), '[]'::jsonb),
+    'captains', coalesce((select jsonb_agg(jsonb_build_object('team', team, 'member_id', member_id) order by team)
+                          from public.chess_captains), '[]'::jsonb),
+    'teams', coalesce((select jsonb_agg(t order by t) from (select distinct team t from public.chess_fixtures) x), '[]'::jsonb),
+    'teamIcons', coalesce((select jsonb_object_agg(team, icon) from public.chess_team_icons), '{}'::jsonb)
+  );
+end $$;
+
+CREATE OR REPLACE FUNCTION public.chess_admin(p_key text, p_action text, p_args jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'extensions'
+AS $function$
+declare r jsonb;
+begin
+  perform public.chess_auth(p_key);
+  case p_action
+    when 'addMember' then
+      insert into public.chess_members (name) values (p_args->>'name')
+      returning jsonb_build_object('id', id, 'name', name, 'active', active) into r;
+    when 'updateMember' then
+      update public.chess_members
+         set name = coalesce(p_args->>'name', name),
+             active = coalesce((p_args->>'active')::boolean, active)
+       where id = (p_args->>'id')::bigint
+      returning jsonb_build_object('id', id, 'name', name, 'active', active) into r;
+    when 'addFixture' then
+      insert into public.chess_fixtures (match_date, team, opponent, home_away, notes, competition)
+      values ((p_args->>'date')::date, p_args->>'team', p_args->>'opponent', p_args->>'homeAway',
+              nullif(p_args->>'notes', ''), nullif(p_args->>'competition', ''))
+      returning jsonb_build_object('id', id, 'match_date', match_date) into r;
+    when 'deleteFixture' then
+      delete from public.chess_fixtures where id = (p_args->>'id')::bigint;
+      r := jsonb_build_object('ok', true);
+    when 'addDate' then
+      insert into public.chess_extra_dates (event_date, label)
+      values ((p_args->>'date')::date, nullif(p_args->>'label', ''))
+      on conflict (event_date) do update set label = excluded.label
+      returning jsonb_build_object('id', id, 'event_date', event_date) into r;
+    when 'deleteDate' then
+      delete from public.chess_extra_dates where id = (p_args->>'id')::bigint;
+      r := jsonb_build_object('ok', true);
+    when 'setCaptain' then
+      if p_args->>'memberId' is null then
+        delete from public.chess_captains where team = p_args->>'team';
+      else
+        if not exists (select 1 from public.chess_members where id = (p_args->>'memberId')::bigint) then
+          return jsonb_build_object('error', 'Unknown member.');
+        end if;
+        insert into public.chess_captains (team, member_id, updated_at)
+        values (p_args->>'team', (p_args->>'memberId')::bigint, now())
+        on conflict (team) do update set member_id = excluded.member_id, updated_at = excluded.updated_at;
+      end if;
+      r := jsonb_build_object('ok', true);
+    when 'setTeamIcon' then
+      if p_args->>'icon' is null then
+        delete from public.chess_team_icons where team = p_args->>'team';
+      else
+        insert into public.chess_team_icons (team, icon, updated_at)
+        values (p_args->>'team', p_args->>'icon', now())
+        on conflict (team) do update set icon = excluded.icon, updated_at = excluded.updated_at;
+      end if;
+      r := jsonb_build_object('ok', true);
+    else
+      return jsonb_build_object('error', 'Unknown action.');
+  end case;
+  return coalesce(r, jsonb_build_object('error', 'Not found.'));
+end $function$
+;
+
+revoke all on function public.chess_set_status_v2(text, bigint, date, text, text, boolean, text) from public, authenticated;
+revoke all on function public.chess_get_data(text, date, date, boolean) from public, authenticated;
+revoke all on function public.chess_admin(text, text, jsonb) from public, authenticated;
+grant execute on function public.chess_set_status_v2(text, bigint, date, text, text, boolean, text) to anon;
+grant execute on function public.chess_get_data(text, date, date, boolean) to anon;
+grant execute on function public.chess_admin(text, text, jsonb) to anon;

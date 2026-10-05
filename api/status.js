@@ -1,4 +1,4 @@
-// POST /api/status { memberId, date, status, actor }
+// POST /api/status { memberId, date, status, team?, actor }
 //   status: 'scheduled' | 'available' | 'undecided' | 'unavailable' | null (clear)
 //   actor:  the name the person picked as "who are you" (audit only)
 //
@@ -20,12 +20,13 @@ export default async function handler(req, res) {
   const session = requireRole(req, res, 'member');
   if (!session) return;
 
-  const { memberId, date, status, actor } = req.body || {};
+  const { memberId, date, status, actor, team } = req.body || {};
   const id = Number(memberId);
 
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Unknown member.' });
   if (!isIsoDate(date)) return res.status(400).json({ error: 'Bad date.' });
   if (status !== null && !STATUSES.has(status)) return res.status(400).json({ error: 'Bad status.' });
+  if (team != null && (typeof team !== 'string' || !team.trim() || team.length > 40)) return res.status(400).json({ error: 'Bad team.' });
 
   const elevated = ROLE_RANK[session.role] >= ROLE_RANK.captain;
   if (!elevated && date < ukDate(0)) {
@@ -34,12 +35,14 @@ export default async function handler(req, res) {
 
   try {
     const who = typeof actor === 'string' ? actor.slice(0, 60) : '';
-    const r = await rpc('chess_set_status', {
+    const r = await rpc('chess_set_status_v2', {
       p_member: id,
       p_date: date,
       p_status: status,
       p_by: `${session.role}:${who}`,
       p_allow_inactive: elevated,
+      // Which team they're scheduled for. Optional when only one of our teams plays that day.
+      p_team: status === 'scheduled' && team ? team.trim() : null,
     });
     if (r && r.error) return res.status(400).json({ error: r.error });
     return res.status(200).json({ ok: true });
